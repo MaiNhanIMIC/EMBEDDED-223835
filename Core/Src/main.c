@@ -53,6 +53,39 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 /* USER CODE BEGIN PFP */
 void MY_Handler();
+
+void TIM1_Init()
+{
+	__HAL_RCC_TIM1_CLK_ENABLE();
+	uint16_t* PSC = (uint16_t*)0x40010028;
+	uint16_t* ARR = (uint16_t*)0x4001002c;
+	uint16_t* CNT = (uint16_t*)0x40010024;
+	uint32_t* CR1 = (uint32_t*)0x40010000;
+	uint32_t* SR  = (uint32_t*)0x40010010;
+	uint32_t* DIER =(uint32_t*)0x4001000c;
+
+	*ARR = 3999;
+	*PSC = 15999;
+	*DIER |= 1;
+	*CR1 |= 1;
+
+}
+void my_delay(int time_sec)
+{
+	uint32_t* SR  = (uint32_t*)0x40010010;
+	for(int i = 0; i < time_sec; i++)
+	{
+		while(!(*SR & 1));
+		*SR &= ~1;
+	}
+}
+
+void my_time1_handle()
+{
+	uint32_t* SR  = (uint32_t*)0x40010010;
+	*SR &= ~1;
+}
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -122,6 +155,7 @@ int main(void)
   /***************** BEGIN SET UP NVIC (Core ARM)********************/
   uint32_t* NVIC_ISER0 = (uint32_t*)0xe000e100;
   *NVIC_ISER0 |= 1<<6;
+  *NVIC_ISER0 |= 1<<25;
   /***************** END OF SETTING NVIC (Core ARM)********************/
 
 
@@ -136,23 +170,22 @@ int main(void)
 
   uint32_t* Function = (uint32_t*)0x20000058;
   *Function = (int)MY_Handler | 1;
+  uint32_t* TIM1_HANDLER = (uint32_t*)0x200000A4;
+  *TIM1_HANDLER = (int)my_time1_handle | 1;
 
   button_state = global;
+
+  TIM1_Init();
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
 
-	  button_state = ((*GPIOA_IDR >> 0) & 1);
-	  if(button_state == DUOC_NHAN)
-	  {
-		  *GPIOD_ODR |= (1<<12);	//on LED
-	  }
-	  else
-	  {
-		  *GPIOD_ODR &= ~(1<<12);	//off LED
-	  }
 
+		  *GPIOD_ODR |= (1<<12);	//on LED
+		  my_delay(2);
+		  *GPIOD_ODR &= ~(1<<12);	//off LED
+		  my_delay(2);
 
     /* USER CODE END WHILE */
 
