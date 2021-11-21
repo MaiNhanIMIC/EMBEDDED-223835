@@ -46,6 +46,8 @@ typedef enum {
 
 /* USER CODE BEGIN PV */
 int global = 10;
+int cnt = 0;
+uint8_t dir = 1;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -64,9 +66,9 @@ void TIM1_Init()
 	uint32_t* SR  = (uint32_t*)0x40010010;
 	uint32_t* DIER =(uint32_t*)0x4001000c;
 
-	*ARR = 3999;
+	*ARR = 9;
 	*PSC = 15999;
-	*DIER |= 1;
+//	*DIER |= 1;		//de timer 1 tao ra su kien ngat --> gui --> nvic
 	*CR1 |= 1;
 
 }
@@ -86,6 +88,54 @@ void my_time1_handle()
 	*SR &= ~1;
 }
 
+void TIM1_UP_TIM10_IRQHandler()
+{
+	//application code
+}
+
+void TIM4_PWM_Init()
+{
+	//set up PD12 as TIMER4_CH1
+	__HAL_RCC_GPIOD_CLK_ENABLE();
+	uint32_t* GPIOD_MODER = (uint32_t*)(0x40020c00);
+	*GPIOD_MODER &= ~(0b11 << 24);
+	*GPIOD_MODER |= (0b10 << 24);
+	uint32_t* GPIOD_AFRH = (uint32_t*)(0x40020c24);
+	*GPIOD_AFRH  |= (0b0010<<16);
+
+	//set up time 4 f=1kHz
+	//Ftimer = 16Mhz
+	__HAL_RCC_TIM4_CLK_ENABLE();
+	uint16_t* ARR = (uint16_t*)0x4000082c;
+	uint16_t* PSC = (uint16_t*)0x40000828;
+	uint32_t* CCR1 = (uint32_t*)0x40000834;
+
+	*ARR = 99;			//~100%
+	/*
+	 * Ftimer = 16 000 000 ------> 1s
+	 * 			16 000    <-----  1ms
+	 * 			100       <-----  1ms
+	 * */
+	*PSC = 16000 / 100 - 1;
+
+	*CCR1 = 25;
+
+	uint16_t* CCMR1 = (uint16_t*)0x40000818;
+	*CCMR1 &= ~(0b11);				// set 00: CC1 channel is configured as OUTPUT.
+	*CCMR1 |= (0b110 << 4);				//PWM mode 1
+
+	uint16_t* CCER = (uint16_t*)0x40000820;
+	*CCER |= 1;
+
+	uint32_t* CR1 = (uint32_t*)0x40000800;
+	*CR1 |= 1;
+}
+
+void Modify_PWM(uint8_t value)
+{
+	uint32_t* CCR1 = (uint32_t*)0x40000834;
+	*CCR1  = value;
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -155,7 +205,7 @@ int main(void)
   /***************** BEGIN SET UP NVIC (Core ARM)********************/
   uint32_t* NVIC_ISER0 = (uint32_t*)0xe000e100;
   *NVIC_ISER0 |= 1<<6;
-  *NVIC_ISER0 |= 1<<25;
+  *NVIC_ISER0 |= 1<<25;			//enable position 25 ( time 1 & time10 UPDATE )
   /***************** END OF SETTING NVIC (Core ARM)********************/
 
 
@@ -171,21 +221,49 @@ int main(void)
   uint32_t* Function = (uint32_t*)0x20000058;
   *Function = (int)MY_Handler | 1;
   uint32_t* TIM1_HANDLER = (uint32_t*)0x200000A4;
-  *TIM1_HANDLER = (int)my_time1_handle | 1;
+  *TIM1_HANDLER = (int)my_time1_handle | 1;			//thumb
 
   button_state = global;
 
   TIM1_Init();
+  TIM4_PWM_Init();
+
+  //set dong rong xung 50%
+  //set chu ky 1Khz
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  if(dir)
+	  {
+		  if(cnt > 99)
+		  {
+			  dir = 0;
+		  }
+		  cnt++;
+		  if(cnt > 100) cnt = 100;
+
+	  }
+	  else
+	  {
+		  if(cnt < 1)
+		  {
+			  dir = 1;
+		  }
+		  cnt--;
+		  if(cnt < 0) cnt = 0;
+	  }
 
 
-		  *GPIOD_ODR |= (1<<12);	//on LED
-		  my_delay(2);
-		  *GPIOD_ODR &= ~(1<<12);	//off LED
-		  my_delay(2);
+
+	  Modify_PWM(cnt);
+	  HAL_Delay(100);
+
+//		  *GPIOD_ODR |= (1<<12);	//on LED
+//		  my_delay(1);
+//		  *GPIOD_ODR &= ~(1<<12);	//off LED
+//		  my_delay(3);
 
     /* USER CODE END WHILE */
 
