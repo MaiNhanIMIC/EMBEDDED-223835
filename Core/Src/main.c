@@ -48,6 +48,7 @@ typedef enum {
 int global = 10;
 int cnt = 0;
 uint8_t dir = 1;
+uint16_t T = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -136,6 +137,118 @@ void Modify_PWM(uint8_t value)
 	uint32_t* CCR1 = (uint32_t*)0x40000834;
 	*CCR1  = value;
 }
+void Tim1_Cap()
+{
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	uint32_t* MODER = (uint32_t*)0x40020000;
+	*MODER &= ~(0b11<<16);
+	*MODER |= (0b10<<16);
+
+	uint32_t* AFRH = (uint32_t*)0x40020024;
+	*AFRH |= 1;
+
+	__HAL_RCC_TIM1_CLK_ENABLE();
+	uint32_t* CR1 = (uint32_t*)0x40010000;
+	uint16_t* ARR = (uint16_t*)0x4001002c;
+	uint16_t* PSC = (uint16_t*)0x40010028;
+	uint32_t* CCMR1 = (uint32_t*)0x40010018;
+	uint32_t* CCER = (uint32_t*)0x40010020;
+	uint32_t* SMCR = (uint32_t*)0x40010008;
+
+	*SMCR |= 0b100;			// set RESET mode
+	*SMCR |= 0b100 << 4;	// set TRIGGER as edge detector
+	*ARR = 0xffff;			// set max value for ARR
+	*PSC = 	16 -1;			// 1 cnt ~ 1us
+
+	*CCMR1 |= 1;			// IC1 is mapped on TI1
+	*CCER |= 1;				// enable capture/compare
+	*CR1 |= 1;				// enable timer 1
+
+}
+uint16_t Get_T()
+{
+	uint16_t* CCR1 = (uint16_t*)0x40010034;
+	return *CCR1 + 1;
+}
+
+#define TIMER5_BASE 0x40000c00
+uint32_t* CNT = (uint32_t*)(TIMER5_BASE + 0x24);
+uint32_t* CCR1 = (uint32_t*)(TIMER5_BASE + 0x34);
+uint32_t* CCR2 = (uint32_t*)(TIMER5_BASE + 0x38);
+uint16_t cnt_val = 0;
+uint16_t cap1_val = 0;
+uint16_t cap2_val = 0;
+void time5_init()
+{
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	uint32_t* MODER = (uint32_t*)0x40020000;
+	*MODER &= ~(0b11);
+	*MODER |= (0b10);
+	uint32_t* AFRL = (uint32_t*)0x40020020;
+	*AFRL |= 2;
+
+	__HAL_RCC_TIM5_CLK_ENABLE();
+	//timer basic
+	uint32_t* CR1 = (uint32_t*)(TIMER5_BASE);
+	uint32_t* PSC = (uint32_t*)(TIMER5_BASE + 0x28);
+	uint32_t* ARR = (uint32_t*)(TIMER5_BASE + 0x2C);
+
+	//ftimer (div: 1) = 16 000 000 cnt --> 1000 ms
+	//		 (div: 16 000 ) = 1    cnt --> 1 ms
+	*PSC = 16000 - 1;
+	*ARR = 0xffff;
+
+	//timer capture - Channel 1 - rising
+	uint16_t* CCER = (uint16_t*)(TIMER5_BASE + 0x20);
+	uint16_t* CCMR1 = (uint16_t*)(TIMER5_BASE + 0x18);
+	*CCER &= ~( (1<< 1) | (1<<3));		//select rising for TI1FP1
+	*CCMR1 |= 0b01;						//select TI1FP1 for IC1
+	*CCER |= 1;							//enable capture ch 1
+	//timer capture - Channel 2 - falling
+	*CCER &= ~( (1<< 7)); *CCER |= ( (1<< 5));	//select falling for TI1FP1
+	*CCMR1 |= 0b10 << 8;						//select TI1FP2 for IC2
+	*CCER |= 1 << 4;							//enable capture ch 2
+
+	//timer slave mode control - reset cnt when rising
+	uint16_t* SMCR = (uint16_t*)(TIMER5_BASE + 0x08);
+	*SMCR |= 0b100;		//select RESET mode
+	*SMCR |= 0b101 << 4;//select trigger source is TI1FP1
+
+	*CR1 |= 1;			//enable count
+}
+
+#define GPIO_BASE_ADD 0x40020400
+#define UART_BASE_ADD 0x40011000
+void UART1_Init()
+{
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	uint32_t* MODER = (uint32_t*)(GPIO_BASE_ADD);
+	uint32_t* AFRL  = (uint32_t*)(GPIO_BASE_ADD + 0x20);
+	*MODER &= ~(0b1111<<12);
+	*MODER |= (0b10 << 12) | (0b10 << 14);
+	*AFRL |= (0b0111 << 24)| (0b0111 << 28);
+
+	__HAL_RCC_USART1_CLK_ENABLE();
+	uint32_t* CR1 = (uint32_t*)(UART_BASE_ADD + 0x0c);
+	uint32_t* BRR = (uint32_t*)(UART_BASE_ADD + 0x08);
+	//Fuart = 16Mhz
+	//Baudrate = 9600
+	// 16 000 000 / (16*9600) = 104.166667
+	//man = 104
+	//fra = 0.1666667*16 = 2.666 ~ 3
+	*BRR = (104 << 4) | 3;
+
+	*CR1 |= (1<< 13) | (1<< 3) | (1<< 2);
+}
+void UART1_Send(char data)
+{
+	uint32_t* SR = (uint32_t*)(UART_BASE_ADD + 0x00);
+	uint32_t* DR = (uint32_t*)(UART_BASE_ADD + 0x04);
+	while(((*SR >> 7) & 1) != 1);
+	*DR = data;
+	while(((*SR >> 6) & 1) != 1);
+	*SR &= ~(1<<6);
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -156,7 +269,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+	HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -227,43 +340,23 @@ int main(void)
 
   TIM1_Init();
   TIM4_PWM_Init();
-
+  Tim1_Cap();
+  Modify_PWM(60);
+  time5_init();
+  UART1_Init();
   //set dong rong xung 50%
   //set chu ky 1Khz
-
+  const char msg[] = "xin chao\r\n";
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if(dir)
+	  for(int i = 0; i < sizeof(msg); i++)
 	  {
-		  if(cnt > 99)
-		  {
-			  dir = 0;
-		  }
-		  cnt++;
-		  if(cnt > 100) cnt = 100;
-
-	  }
-	  else
-	  {
-		  if(cnt < 1)
-		  {
-			  dir = 1;
-		  }
-		  cnt--;
-		  if(cnt < 0) cnt = 0;
+		  UART1_Send(msg[i]);
 	  }
 
-
-
-	  Modify_PWM(cnt);
-	  HAL_Delay(100);
-
-//		  *GPIOD_ODR |= (1<<12);	//on LED
-//		  my_delay(1);
-//		  *GPIOD_ODR &= ~(1<<12);	//off LED
-//		  my_delay(3);
+	  HAL_Delay(1000);
 
     /* USER CODE END WHILE */
 
