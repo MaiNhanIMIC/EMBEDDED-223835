@@ -219,6 +219,18 @@ void time5_init()
 
 #define GPIO_BASE_ADD 0x40020400
 #define UART_BASE_ADD 0x40011000
+uint32_t* SR = (uint32_t*)(UART_BASE_ADD + 0x00);
+uint32_t* DR = (uint32_t*)(UART_BASE_ADD + 0x04);
+char buffer[32] = {0};
+int uart_index = 0;
+void UART1_Rx_Handler()
+{
+	buffer[uart_index] = (char)(*DR);
+	*SR &= ~(1>>5);				//clear RXNE flag
+	if(uart_index++ >= sizeof(buffer)) uart_index = 0;
+}
+
+
 void UART1_Init()
 {
 	__HAL_RCC_GPIOB_CLK_ENABLE();
@@ -238,6 +250,16 @@ void UART1_Init()
 	//fra = 0.1666667*16 = 2.666 ~ 3
 	*BRR = (104 << 4) | 3;
 
+//	*CR1 |= (1<< 5);		//enable RXNE interrupt
+//	uint32_t* NVIC_ISER1 = (uint32_t*)0xe000e104;
+//	*NVIC_ISER1 |= (1 << (37-32)); //enable interrupt in 37 position
+//	int* func = 0x200000d4;
+//	*func = (int)UART1_Rx_Handler | 1;
+
+	uint32_t* CR3 = (uint32_t*)0x40011014;
+
+	*CR3 |= (1<<6);
+
 	*CR1 |= (1<< 13) | (1<< 3) | (1<< 2);
 }
 void UART1_Send(char data)
@@ -248,6 +270,22 @@ void UART1_Send(char data)
 	*DR = data;
 	while(((*SR >> 6) & 1) != 1);
 	*SR &= ~(1<<6);
+}
+
+void DMA_Init()
+{
+	__HAL_RCC_DMA2_CLK_ENABLE();
+	uint32_t* S2CR 		= (uint32_t*)0x40026440;	//control
+	uint32_t* S2NDTR 	= (uint32_t*)0x40026444;	//number of data
+	uint32_t* S2PAR 	= (uint32_t*)0x40026448;	//peripherial address
+	uint32_t* S2M0AR 	= (uint32_t*)0x4002644c;	//memory address
+
+	*S2M0AR = (uint32_t)buffer;
+	*S2NDTR = sizeof(buffer);
+	*S2PAR  = (uint32_t)(0x40011004);  //uart1_dr
+
+	*S2CR |= (0b100 << 25) | (1<<10) | (1<<8) | (1<<0);
+
 }
 /* USER CODE END PFP */
 
@@ -344,19 +382,18 @@ int main(void)
   Modify_PWM(60);
   time5_init();
   UART1_Init();
+  DMA_Init();
   //set dong rong xung 50%
   //set chu ky 1Khz
   const char msg[] = "xin chao\r\n";
+
+
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  for(int i = 0; i < sizeof(msg); i++)
-	  {
-		  UART1_Send(msg[i]);
-	  }
 
-	  HAL_Delay(1000);
 
     /* USER CODE END WHILE */
 
