@@ -49,6 +49,10 @@ int global = 10;
 int cnt = 0;
 uint8_t dir = 1;
 uint16_t T = 0;
+int16_t X_axis = 0;
+int16_t Y_axis = 0;
+int16_t Z_axis = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -221,7 +225,7 @@ void time5_init()
 #define UART_BASE_ADD 0x40011000
 uint32_t* SR = (uint32_t*)(UART_BASE_ADD + 0x00);
 uint32_t* DR = (uint32_t*)(UART_BASE_ADD + 0x04);
-char buffer[32] = {0};
+volatile char buffer[32] = {0};
 int uart_index = 0;
 void UART1_Rx_Handler()
 {
@@ -287,6 +291,225 @@ void DMA_Init()
 	*S2CR |= (0b100 << 25) | (1<<10) | (1<<8) | (1<<0);
 
 }
+
+void SPI_init()
+{
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	uint32_t* GPIOA_MODER = (uint32_t*)(0x40020000);
+	uint32_t* GPIOA_AFRL  = (uint32_t*)(0x40020020);
+	*GPIOA_MODER &= ~(0b111111 << 10);
+	*GPIOA_MODER |= (0b10 << 10) | (0b10 << 12) | (0b10 << 14);
+	*GPIOA_AFRL &= ~(0xfff << 20);
+	*GPIOA_AFRL |= (5<<20) | (5 << 24) | (5<<28);
+
+	__HAL_RCC_GPIOE_CLK_ENABLE();
+	uint32_t* GPIOE_MODER = (uint32_t*)(0x40021000);
+	*GPIOE_MODER |= (0b01 << 6);
+	uint32_t* GPIOE_ODR = (uint32_t*)(0x40021014);
+	*GPIOE_ODR |= 1<<3;
+
+	__HAL_RCC_SPI1_CLK_ENABLE();
+	uint32_t* CR1 = (uint32_t*)(0x40013000);
+	*CR1 |= (0b11<<3);			//set baundrate as Fpclk/16 = 1MHz
+	*CR1 |= (1<<8) | (1<<9); 	//enable software management
+	*CR1 |= (0b1 <<6) | (1<<2); //enable SPI in master mode
+}
+
+void SPI_Write(uint8_t data)
+{
+	uint8_t temp = 0;
+	uint32_t* DR = (uint32_t*)(0x4001300c);
+	uint32_t* SR = (uint32_t*)(0x40013008);
+
+	while(((*SR >> 1)&1)!=1);
+	*DR = data;
+	while(((*SR >> 7)&1)==1);
+
+	while(((*SR >> 0)&1)!=1);	//if Rx buffer has data
+	temp = *DR;					//clear Rx buffer
+	while(((*SR >> 7)&1)==1);
+
+}
+
+uint8_t SPI_Read()
+{
+	uint8_t temp = 0;
+	uint32_t* DR = (uint32_t*)(0x4001300c);
+	uint32_t* SR = (uint32_t*)(0x40013008);
+
+	while(((*SR >> 1)&1)!=1);
+	*DR = 0xff;
+	while(((*SR >> 7)&1)==1);
+
+	while(((*SR >> 0)&1)!=1);	//if Rx buffer has data
+	temp = *DR;					//clear Rx buffer
+	while(((*SR >> 7)&1)==1);
+
+	return temp;
+}
+
+void LSM303_Active()
+{
+	uint32_t* GPIOE_ODR = (uint32_t*)(0x40021014);
+	*GPIOE_ODR &= ~(1<<3);		//active slave
+}
+
+void LSM303_Inactive()
+{
+	uint32_t* GPIOE_ODR = (uint32_t*)(0x40021014);
+	*GPIOE_ODR |= (1<<3);	//in-active slave
+}
+
+void LSM303_Init()
+{
+	LSM303_Active();
+	/* enable x, y, z axis
+	 * Power mode: 10Hz
+	 */
+	SPI_Write(0x20);
+	SPI_Write(0x27);
+
+	/* data resolution is 12bit (set HR to 1)
+	 * Power mode: 10Hz
+	 * Enable SPI
+	 */
+	SPI_Write(0x23 );
+	SPI_Write((1<<3) | 1);
+
+	LSM303_Inactive();
+}
+
+int16_t LSM303_Read_X()
+{
+	LSM303_Active();
+	SPI_Write(0x28 | (1<<7));
+	uint8_t low = SPI_Read();
+
+	SPI_Write(0x29| (1<<7));
+	uint8_t high = SPI_Read();
+	LSM303_Inactive();
+
+	int16_t result = low | (high << 8);
+	if(result > 0x8000)
+		result -= (0xffff+1);
+	result /= 16;
+	return result;
+}
+
+uint16_t LSM303_Read_Y()
+{
+	LSM303_Active();
+	SPI_Write(0x2A | (1<<7));
+	uint8_t low = SPI_Read();
+
+	SPI_Write(0x2B| (1<<7));
+	uint8_t high = SPI_Read();
+	LSM303_Inactive();
+	int16_t result = low | (high << 8);
+	if(result > 0x8000)
+		result -= (0xffff+1);
+	result /= 16;
+	return result;
+}
+uint16_t LSM303_Read_Z()
+{
+	LSM303_Active();
+	SPI_Write(0x2C | (1<<7));
+	uint8_t low = SPI_Read();
+
+	SPI_Write(0x2D| (1<<7));
+	uint8_t high = SPI_Read();
+	LSM303_Inactive();
+
+	int16_t result = low | (high << 8);
+
+	if(result > 0x8000)
+		result -= (0xffff+1);
+	result /= 16;
+
+	return result;
+}
+uint8_t LSM303_Read_ID()
+{
+	uint8_t WHO_AM_I = 0x0f | (1<<7);	//read ID
+	LSM303_Active();
+	SPI_Write(WHO_AM_I);
+	uint8_t ID = SPI_Read();
+	LSM303_Inactive();
+	return ID;
+}
+
+void I2C1_LSM303_init()
+{
+	__HAL_RCC_I2C1_CLK_ENABLE();
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	uint32_t* MODER = (uint32_t*)(0x40020400);
+	*MODER |= (0b10 << 12) | (0b10 << 18);
+
+	uint32_t* PUPDR = (uint32_t*)(0x4002040c);
+	*PUPDR |= (0b01 << 12) | (0b01 << 18);
+
+	uint32_t* AFRL = (uint32_t*)(0x40020420);
+	*AFRL &= ~(0b1111 << 24);
+	*AFRL |= (4 << 24);
+
+	uint32_t* AFRH = (uint32_t*)(0x40020424);
+	*AFRH &= ~(0b1111 << 4);
+	*AFRH |= (4 << 4);
+
+	uint32_t* CR1 = (uint32_t*)0x40005400;
+	*CR1 &= ~1;
+
+	uint32_t* CR2 = (uint32_t*)0x40005404;
+	*CR2 |= 16;
+
+	uint32_t* CCR = (uint32_t*)0x4000541c;
+	*CCR |= 80;
+
+	*CR1 |= 1;
+}
+
+void I2C1_LSM303_ReadID()
+{
+	uint32_t* CR1 = (uint32_t*)0x40005400;
+	uint32_t* DR  = (uint32_t*)0x40005410;
+	uint32_t* SR1  = (uint32_t*)0x40005414;
+	uint32_t* SR2  = (uint32_t*)0x40005418;
+
+	const unsigned char SLAVE_ADDR = 0b0011001;
+
+	while(((*SR2 >> 1) &1) == 1);
+	*CR1 |= 1<<8;				//generate start bit
+	while(((*SR1 >> 0) &1) == 0);
+
+	//send slave addr(0b0011001) + write bit (0)
+	*DR = (SLAVE_ADDR << 1) | 0;
+	while(((*SR1 >> 1) &1) == 0);
+	uint32_t temp = *SR2;
+
+	//send WHO_AM_I (0x0f)
+	*DR = 0x0f;
+	while(((*SR1 >> 2) &1) == 0);
+
+	//wait ACK
+	while(((*SR1 >> 10) &1) == 1);
+
+	//generate start bit
+	*CR1 |= 1<<8;
+	while(((*SR1 >> 0) &1) == 0);
+	//send slave addr(0b0011001) + read bit (1)
+	*DR = (SLAVE_ADDR << 1) | 1;
+	while(((*SR1 >> 1) &1) == 0);
+	temp = *SR2;
+
+	//read data from slave
+	uint8_t data = *DR;
+
+	//generate stop bit
+	*CR1 |= 1<<9;
+
+}
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -387,14 +610,20 @@ int main(void)
   //set chu ky 1Khz
   const char msg[] = "xin chao\r\n";
 
-
-
+  SPI_init();
+  uint8_t id = LSM303_Read_ID();
+  LSM303_Init();
+  I2C1_LSM303_init();
+  I2C1_LSM303_ReadID();
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
 
-
+	  X_axis = LSM303_Read_X();
+	  Y_axis = LSM303_Read_Y();
+	  Z_axis = LSM303_Read_Z();
+	  HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
