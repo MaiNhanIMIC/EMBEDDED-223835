@@ -52,7 +52,7 @@ uint16_t T = 0;
 int16_t X_axis = 0;
 int16_t Y_axis = 0;
 int16_t Z_axis = 0;
-
+float adc_vin;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -310,6 +310,7 @@ void SPI_init()
 
 	__HAL_RCC_SPI1_CLK_ENABLE();
 	uint32_t* CR1 = (uint32_t*)(0x40013000);
+	*CR1 |= 1<<1;
 	*CR1 |= (0b11<<3);			//set baundrate as Fpclk/16 = 1MHz
 	*CR1 |= (1<<8) | (1<<9); 	//enable software management
 	*CR1 |= (0b1 <<6) | (1<<2); //enable SPI in master mode
@@ -446,8 +447,11 @@ void I2C1_LSM303_init()
 	uint32_t* MODER = (uint32_t*)(0x40020400);
 	*MODER |= (0b10 << 12) | (0b10 << 18);
 
-	uint32_t* PUPDR = (uint32_t*)(0x4002040c);
-	*PUPDR |= (0b01 << 12) | (0b01 << 18);
+	uint32_t* OTYPER = (uint32_t*)(0x40020404);
+	*OTYPER |= (0b1 << 6) | (0b1 << 9);
+
+	//	uint32_t* PUPDR = (uint32_t*)(0x4002040c);
+	//	*PUPDR |= (0b01 << 12) | (0b01 << 18);
 
 	uint32_t* AFRL = (uint32_t*)(0x40020420);
 	*AFRL &= ~(0b1111 << 24);
@@ -464,7 +468,7 @@ void I2C1_LSM303_init()
 	*CR2 |= 16;
 
 	uint32_t* CCR = (uint32_t*)0x4000541c;
-	*CCR |= 80;
+	*CCR |= 320;
 
 	*CR1 |= 1;
 }
@@ -510,6 +514,161 @@ void I2C1_LSM303_ReadID()
 
 }
 
+
+void I2C_Scan_Slave()
+{
+	uint32_t* CR1 = (uint32_t*)0x40005400;
+	uint32_t* DR  = (uint32_t*)0x40005410;
+	uint32_t* SR1  = (uint32_t*)0x40005414;
+	uint32_t* SR2  = (uint32_t*)0x40005418;
+
+	__HAL_RCC_GPIOD_CLK_ENABLE();
+	uint32_t* MODER_D  = (uint32_t*)0x40020c00;
+	uint32_t* ODR_D    = (uint32_t*)0x40020c14;
+	*MODER_D |= 0b01 << 8;
+	*ODR_D &= ~(1<< 4);
+	HAL_Delay(5000);
+	*ODR_D |= 1<< 4;
+	HAL_Delay(1000);
+
+	for(int i = 0; i <= 127; i++)
+	{
+		while(((*SR2 >> 1) &1) == 1);
+		*CR1 |= 1<<8;				//generate start bit
+		while(((*SR1 >> 0) &1) == 0);
+
+		*DR = (i<<1) |0;
+		char time = 0;
+		while(((*SR1 >> 1) &1) == 0)
+		{
+			if(time++ > 10)
+				break;
+			HAL_Delay(1);
+		}
+		if(time < 10)
+			__asm("NOP");
+		uint32_t temp = *SR2;
+
+		//generate stop bit
+		*CR1 |= 1<<9;
+		HAL_Delay(1);
+	}
+
+
+}
+
+void I2C1_Audio_ReadID()
+{
+	uint32_t* CR1 = (uint32_t*)0x40005400;
+	uint32_t* DR  = (uint32_t*)0x40005410;
+	uint32_t* SR1  = (uint32_t*)0x40005414;
+	uint32_t* SR2  = (uint32_t*)0x40005418;
+
+	__HAL_RCC_GPIOD_CLK_ENABLE();
+	uint32_t* MODER_D  = (uint32_t*)0x40020c00;
+	uint32_t* ODR_D    = (uint32_t*)0x40020c14;
+	*MODER_D |= 0b01 << 8;
+	*ODR_D &= ~(1<< 4);
+	HAL_Delay(5000);
+	*ODR_D |= 1<< 4;
+	HAL_Delay(1000);
+	const unsigned char SLAVE_ADDR = 0b1001010;
+
+	while(((*SR2 >> 1) &1) == 1);
+	*CR1 |= 1<<8;				//generate start bit
+	while(((*SR1 >> 0) &1) == 0);
+
+	//send slave addr(0b0011001) + write bit (0)
+	*DR = (SLAVE_ADDR<<1) |0;
+	while(((*SR1 >> 1) &1) == 0);
+	uint32_t temp = *SR2;
+
+	//send WHO_AM_I ()
+	*DR = 0x01;
+	while(((*SR1 >> 2) &1) == 0);
+
+	//wait ACK
+	while(((*SR1 >> 10) &1) == 1);
+
+	//generate start bit
+	*CR1 |= 1<<8;
+	while(((*SR1 >> 0) &1) == 0);
+	//send slave addr(0b0011001) + read bit (1)
+	*DR = (SLAVE_ADDR << 1) | 1;
+	while(((*SR1 >> 1) &1) == 0);
+	temp = *SR2;
+
+	//read data from slave
+	uint8_t data = *DR;
+
+	//generate stop bit
+	*CR1 |= 1<<9;
+
+}
+
+
+void Reset_System()
+{
+	uint32_t* AIRCR = (uint32_t*)(0xE000ED0C);
+	*AIRCR |= (0x5FA << 16) | (1<<2); // SYSRESETREQ
+}
+
+/* 1s watchdog */
+void IWDG_Init()
+{
+	uint16_t* KR  = (uint16_t*)(0x40003000);
+	uint16_t* PR  = (uint16_t*)(0x40003004);
+	uint16_t* RLR = (uint16_t*)(0x40003008);
+	*KR  = 0x5555;		//enable access to PR and RLR
+	*PR  = 3;
+	*RLR = 1000;
+	*KR  = 0xCCCC;		//start watchdog
+}
+
+void Sleep_Init()
+{
+	__HAL_RCC_PWR_CLK_ENABLE();
+	__HAL_RCC_PWR_CLK_SLEEP_ENABLE();
+
+	uint32_t* CR = (uint32_t*)(0x40007000);
+	*CR |= 0b11;
+	uint32_t* SCR = (uint32_t*)(0xe000ed10);
+	*SCR |= 1<<2;
+	asm("WFI");
+
+}
+
+
+void ADC_Init()
+{
+	__HAL_RCC_ADC1_CLK_ENABLE();
+
+	uint32_t *CR2 = (uint32_t*)(0x40012008);
+	*CR2 |= 1;						//set ADON
+	uint32_t *CCR = (uint32_t*)(0x40012304);
+	*CCR |= 1<<23;					//enable temp sensor
+
+	*CR2 |= 1<<20;					//enable external trigger for injected
+
+	uint32_t *JSQR = (uint32_t*)(0x40012038);
+	*JSQR |= 16;					//set channel 16(temp sensor) for 1st injected
+}
+
+int ADC_Read_Val()
+{
+	uint32_t *CR2 = (uint32_t*)(0x40012008);
+	*CR2 |= 1<<22;
+
+	uint32_t *SR = (uint32_t*)(0x40012000);
+	while(((*SR >>2)&1) == 0);
+	uint32_t *JDR1 = (uint32_t*)(0x4001203c);
+	int result = *JDR1 & 0xfff;
+
+	*SR &= ~(1<<2);
+
+	return result;
+}
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -530,7 +689,7 @@ int main(void)
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-	HAL_Init();
+	//HAL_Init();
 
   /* USER CODE BEGIN Init */
 
@@ -609,21 +768,17 @@ int main(void)
   //set dong rong xung 50%
   //set chu ky 1Khz
   const char msg[] = "xin chao\r\n";
+  ADC_Init();
+//  HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
 
-  SPI_init();
-  uint8_t id = LSM303_Read_ID();
-  LSM303_Init();
-  I2C1_LSM303_init();
-  I2C1_LSM303_ReadID();
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-
-	  X_axis = LSM303_Read_X();
-	  Y_axis = LSM303_Read_Y();
-	  Z_axis = LSM303_Read_Z();
-	  HAL_Delay(1000);
+	  int temp = ADC_Read_Val();
+	  adc_vin = (float)(temp * 3.0f )/4095.0f; //unit: mV
+	  float Temp = ((adc_vin - 0.76) / 2.5) + 25;
+	  HAL_Delay(100);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
